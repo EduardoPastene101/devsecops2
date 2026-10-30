@@ -53,13 +53,37 @@ pipeline {
                 }
             }
         }
+
+        stage('Deploy (staging)') {
+            steps {
+                sh '''
+                    # dontKillMe: que Jenkins no mate la app al terminar este paso
+                    JENKINS_NODE_COOKIE=dontKillMe nohup "$(pipenv --py)" app.py > reports/app.log 2>&1 &
+                    echo $! > app.pid
+                    sleep 4
+                    curl -fsS http://localhost:5000/health
+                '''
+            }
+        }
+
+        stage('Security Test · DAST') {
+            steps {
+                script {
+                    def rc = sh(script: 'zap.sh -cmd -port 8090 -autorun "$WORKSPACE/zap.yaml"', returnStatus: true)
+                    if (rc == 1) { error('ZAP encontró hallazgos de riesgo ALTO') }
+                    if (rc == 2) { unstable('ZAP encontró hallazgos de riesgo MEDIO') }
+                }
+            }
+        }
     }
 
     post {
         always {
+            sh 'if [ -f app.pid ]; then kill "$(cat app.pid)" || true; rm -f app.pid; fi'
             archiveArtifacts artifacts: 'reports/**', allowEmptyArchive: true
         }
         failure  { echo "🔴 ALERTA: ${env.JOB_NAME} #${env.BUILD_NUMBER} bloqueado por seguridad: ${env.BUILD_URL}" }
-        success  { echo "🟢 ${env.JOB_NAME} #${env.BUILD_NUMBER} sin hallazgos" }
+        unstable { echo "🟡 AVISO: ${env.JOB_NAME} #${env.BUILD_NUMBER} con hallazgos medios: ${env.BUILD_URL}" }
+        success  { echo "🟢 ${env.JOB_NAME} #${env.BUILD_NUMBER} listo para producción" }
     }
 }
